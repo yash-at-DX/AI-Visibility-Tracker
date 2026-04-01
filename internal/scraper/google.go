@@ -171,10 +171,10 @@ func (g *GoogleAIScraper) Scrape(ctx context.Context, query string) (models.Resu
 	}
 
 	// ---------------- FINAL ----------------
-	result.Content = content
+	// result.Content = content
 	result.InternalLinks = parser.CleanLinks(links)
 
-	if result.Content == "" {
+	if content == "" {
 		return result, errors.New("no content extracted")
 	}
 

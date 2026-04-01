@@ -179,10 +179,10 @@ func (p *PerplexityScraper) Scrape(ctx context.Context, query string) (models.Re
 	}
 
 	// ---------------- FINAL ----------------
-	result.Content = content
+	// result.Content = content
 	result.InternalLinks = parser.CleanLinks(links)
 
-	if result.Content == "" {
+	if content == "" {
 		return result, errors.New("no content extracted")
 	}
 

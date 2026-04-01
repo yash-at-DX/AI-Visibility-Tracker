@@ -181,10 +181,10 @@ func (g *GeminiScraper) Scrape(ctx context.Context, query string) (models.Result
 	}
 
 	// ---------------- FINAL ----------------
-	result.Content = content
+	// result.Content = content
 	result.InternalLinks = parser.CleanLinks(links)
 
-	if result.Content == "" {
+	if content == "" {
 		return result, errors.New("no content extracted")
 	}
 

@@ -12,11 +12,7 @@ import (
 	"github.com/yash-at-DX/ai-scraper/internal/storage"
 )
 
-func ProcessQueries(queries []string) ([]models.Result, error) {
-
-	store := storage.JSONStore{
-		FilePath: "results.json",
-	}
+func processInternal(queries []string) error {
 
 	b := browser.NewBrowser(true)
 	defer b.Close()
@@ -48,13 +44,13 @@ func ProcessQueries(queries []string) ([]models.Result, error) {
 
 			results := RunScrapers(ctx, scrapers, query)
 
-			if len(results) > 0 {
-				err := store.Upsert(results)
-				if err != nil {
-					log.Println("Failed to save: ", err)
+			// if len(results) > 0 {
+			// 	err := storage.InsertResults(results)
+			// 	if err != nil {
+			// 		log.Println("DB insert Failed: ", err)
 
-				}
-			}
+			// 	}
+			// }
 
 			mu.Lock()
 			finalResults = append(finalResults, results...)
@@ -64,7 +60,14 @@ func ProcessQueries(queries []string) ([]models.Result, error) {
 	}
 	wg.Wait()
 
-	return finalResults, nil
+	if len(finalResults) > 0 {
+		err := storage.InsertResults(finalResults)
+		if err != nil {
+			log.Println("DB insert failed: ", err)
+		}
+	}
+
+	return nil
 }
 
 func RunScrapers(ctx context.Context, scrapers []scraper.Scraper, query string) []models.Result {
@@ -96,4 +99,20 @@ func RunScrapers(ctx context.Context, scrapers []scraper.Scraper, query string) 
 	}
 
 	return results
+}
+
+func ProcessQueriesWithJob(queries []string, jobID string) {
+	defer func() {
+		if r := recover(); r != nil {
+			UpdateJobStatus(jobID, "failed", "panic occurred")
+		}
+	}()
+
+	err := processInternal(queries)
+
+	if err != nil {
+		UpdateJobStatus(jobID, "failed", err.Error())
+	} else {
+		UpdateJobStatus(jobID, "success", "")
+	}
 }
