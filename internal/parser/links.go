@@ -1,28 +1,3 @@
-// package parser
-
-// import (
-// 	"strings"
-// )
-
-// func CleanLinks(links []string) []string {
-// 	seen := make(map[string]bool)
-// 	var cleaned []string
-
-// 	for _, l := range links {
-// 		if l == "" {
-// 			continue
-// 		}
-// 		if strings.Contains(l, "perplexity.ai") {
-// 			continue
-// 		}
-// 		if !seen[l] {
-// 			seen[l] = true
-// 			cleaned = append(cleaned, l)
-// 		}
-// 	}
-// 	return cleaned
-// }
-
 package parser
 
 import (

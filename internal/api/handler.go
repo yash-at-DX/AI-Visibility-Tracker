@@ -1,23 +1,26 @@
 package api
 
 import (
-	"context"
 	"net/http"
-	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/yash-at-DX/ai-scraper/internal/service"
-	"github.com/yash-at-DX/ai-scraper/internal/storage"
 )
 
 type Request struct {
-	Queries []string `json:"queries"`
+	Queries    []string `json:"queries" binding:"required"`
+	WebhookURL string   `json:"webhook_url" binding:"required,url"`
 }
 
 func RegisterRoutes(r *gin.Engine) {
 	r.POST("/scrape", HandleScrape)
-	r.GET("/status/:id", HandleStatus)
+	r.GET("/health", HandleHealth)
+}
+
+func HandleHealth(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"status": "healthy",
+	})
 }
 
 func HandleScrape(c *gin.Context) {
@@ -37,37 +40,13 @@ func HandleScrape(c *gin.Context) {
 		return
 	}
 
-	jobID := service.CreateJob()
-	go service.ProcessQueriesWithJob(req.Queries, jobID)
+	jobID := service.GenerateJobID()
 
-	c.JSON(http.StatusOK, gin.H{
+	go service.ProcessQueriesWithWebhook(req.Queries, jobID, req.WebhookURL)
+
+	c.JSON(http.StatusAccepted, gin.H{
 		"message": "scraping started",
 		"job_id":  jobID,
-	})
-}
-
-func HandleStatus(c *gin.Context) {
-	jobID := strings.TrimSpace(c.Param("id"))
-
-	var status string
-	var errMsg string
-
-	query := `SELECT status, error FROM ai_scrape_jobs WHERE id = ? `
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	err := storage.DB.QueryRowContext(ctx, query, jobID).Scan(&status, &errMsg)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "job not found",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"job_id": jobID,
-		"status": status,
-		"error":  errMsg,
+		"status":  "processing",
 	})
 }
