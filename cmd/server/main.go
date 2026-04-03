@@ -1,43 +1,69 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
-	"os"
 
-	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
-	"github.com/yash-at-DX/ai-scraper/internal/api"
+	"github.com/yash-at-DX/ai-scraper/internal/models"
+	"github.com/yash-at-DX/ai-scraper/internal/service"
+	"github.com/yash-at-DX/ai-scraper/internal/storage"
 )
 
 func main() {
-	err := godotenv.Load()
+	if err := godotenv.Load(); err != nil {
+		log.Println("Failed to load .env file")
+	}
+
+	if err := storage.InitDB(); err != nil {
+		log.Fatal("Failed to initialize db: ", err)
+	}
+
+	queries, err := storage.GetVisibiltyQueries()
 	if err != nil {
-		log.Println("No .env file found")
+		log.Fatal("failed to fetch queries: ", err)
 	}
-	// storage.InitDB()
+	log.Printf("Found %d rows from DB\n", len(queries))
 
-	r := gin.Default()
+	expanded := expandQueries(queries)
+	log.Printf("Expanded to %d individual queries\n", len(expanded))
 
-	// r.Use(func(c *gin.Context) {
-	// 	c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-	// 	c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-	// c.Writer.Header().Set("Access-Control-Allow-Headers","Content-Type", "Authorization")
-
-	// 	if c.Request.Method == "OPTIONS" {
-	// 		c.AbortWithStatus(204)
-	// 		return
-	// 	}
-
-	// 	c.Next()
-	// })
-
-	api.RegisterRoutes(r)
-
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8001"
+	if len(expanded) == 0 {
+		log.Println("Nothing to do. Exiting...")
+		return
 	}
 
-	log.Printf("Server running on : %s", port)
-	r.Run(":" + port)
+	service.RunAllScrapers(expanded)
+
+	log.Println("Done. Exiting...")
+}
+
+func expandQueries(queries []models.VisibilityQuery) []models.VisibilityQuery {
+	var expanded []models.VisibilityQuery
+
+	for _, q := range queries {
+		var questionList []string
+
+		var inner string
+		if err := json.Unmarshal([]byte(q.Query), &inner); err == nil {
+			json.Unmarshal([]byte(inner), &questionList)
+		}
+
+		if len(questionList) == 0 {
+			json.Unmarshal([]byte(q.Query), &questionList)
+		}
+
+		if len(questionList) > 0 {
+			for _, question := range questionList {
+				expanded = append(expanded, models.VisibilityQuery{
+					ProjectID: q.ProjectID,
+					Query:     question,
+				})
+			}
+		} else {
+			expanded = append(expanded, q)
+		}
+	}
+
+	return expanded
 }

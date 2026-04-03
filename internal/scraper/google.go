@@ -3,6 +3,7 @@ package scraper
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/url"
 	"time"
@@ -34,58 +35,65 @@ func (g *GoogleAIScraper) Scrape(ctx context.Context, query string) (models.Resu
 		Source: g.Name(),
 	}
 
-	var content string
 	var links []string
 
 	// ---------------- STEP 1: NAVIGATE ----------------
 	searchURL := "https://www.google.com/search?q=" + url.QueryEscape(query) + "&udm=50"
-
 	log.Println("Google AI: Navigate")
 
-	err := chromedp.Run(ctx,
-		chromedp.Navigate(searchURL),
-	)
-	if err != nil {
-		return result, err
-	}
-
-	log.Println("Waiting for AI block")
-
-	err = chromedp.Run(ctx,
-		chromedp.WaitVisible(`body`, chromedp.ByQuery),
-	)
+	err := chromedp.Run(ctx, chromedp.Navigate(searchURL))
 	if err != nil {
 		return result, err
 	}
 
 	time.Sleep(3 * time.Second)
 
-	// ---------------- STEP 2: WAIT FOR CONTENT (STABLE) ----------------
-	log.Println("Waiting for content to stabilize")
+	// debug: confirm page loaded correctly
+	var title string
+	chromedp.Run(ctx, chromedp.Title(&title))
+	log.Println("Google AI: page title:", title)
 
+	// ---------------- STEP 2: WAIT FOR AI CONTENT ----------------
+	log.Println("Google AI: Waiting for content")
+
+	// try multiple known selectors for Google AI overview block
+	contentSelectors := []string{
+		`.pWvJNd`, // old
+		`.IVvmDb`, // alternate
+		`.wDYxhc`, // another variant
+		`[data-attrid="wa:/description"]`,
+		`.kno-rdesc span`,
+		`.LGOjhe`,
+		`.vxQmIe`,
+		`[jsname="bVFM4b"]`,
+	}
+
+	var content string
 	stableCount := 0
 	var lastLen int
 
-	for i := 0; i < 15; i++ {
+	for i := 0; i < 20; i++ {
 		var current string
 
-		err := chromedp.Run(ctx,
-			chromedp.Evaluate(`(() => {
-				let el = document.querySelector('.pWvJNd');
+		// try each selector until one returns content
+		for _, sel := range contentSelectors {
+			checkJS := fmt.Sprintf(`(() => {
+				let el = document.querySelector('%s');
 				return el ? el.innerText : "";
-			})()`, &current),
-		)
+			})()`, sel)
 
-		if err != nil {
-			continue
+			chromedp.Run(ctx, chromedp.Evaluate(checkJS, &current))
+			if len(current) > 100 {
+				break
+			}
 		}
 
 		currLen := len(current)
-		log.Println("Current length:", currLen)
+		log.Println("Google AI: content length:", currLen)
 
 		if currLen > 200 && currLen == lastLen {
 			stableCount++
-			if stableCount >= 3 {
+			if stableCount >= 2 {
 				content = current
 				break
 			}
@@ -97,84 +105,76 @@ func (g *GoogleAIScraper) Scrape(ctx context.Context, query string) (models.Resu
 		time.Sleep(2 * time.Second)
 	}
 
-	log.Println("Final content length:", len(content))
+	log.Println("Google AI: final content length:", len(content))
 
-	// ---------------- STEP 3: CLICK SOURCES ----------------
-	log.Println("Opening sources tab (JS click)")
+	// ---------------- STEP 3: EXTRACT LINKS ----------------
+	log.Println("Google AI: Extracting links")
 
+	// try sources panel first
 	_ = chromedp.Run(ctx,
 		chromedp.Evaluate(`(() => {
-			let btn = Array.from(document.querySelectorAll('button, span'))
-				.find(el => el.innerText && el.innerText.toLowerCase().includes('sources'));
-
-			if (btn) {
-				btn.click();
-				return true;
-			}
+			let btn = Array.from(document.querySelectorAll('button, span, div[role="button"]'))
+				.find(el => el.innerText && el.innerText.toLowerCase().trim() === 'sources');
+			if (btn) { btn.click(); return true; }
 			return false;
 		})()`, nil),
 	)
 
 	time.Sleep(2 * time.Second)
 
-	// ---------------- STEP 4: WAIT FOR SOURCES ----------------
-	log.Println("Waiting for sources")
-
-	_ = chromedp.Run(ctx,
-		chromedp.WaitVisible(`a.NDNGvf`, chromedp.ByQuery),
-	)
-
-	time.Sleep(1 * time.Second)
-
-	// ---------------- STEP 5: EXTRACT SOURCES ----------------
-	log.Println("Extracting sources")
-
-	err = chromedp.Run(ctx,
-		chromedp.Evaluate(`(() => {
-			let anchors = document.querySelectorAll('a.NDNGvf');
-			let links = [];
-
-			anchors.forEach(a => {
-				if (a.href && a.href.startsWith("http")) {
-					links.push(a.href);
-				}
-			});
-
-			return links;
-		})()`, &links),
-	)
-
-	if err != nil {
-		log.Println("Source extraction error:", err)
+	// try known source link selectors
+	sourcesSelectors := []string{
+		`a.NDNGvf`,
+		`a.cz3goc`,
+		`.UJe8Uc a[href]`,
+		`.yQDlj a[href]`,
+		`.guvigf a[href]`,
 	}
 
-	// ---------------- FALLBACK ----------------
+	for _, sel := range sourcesSelectors {
+		linksJS := fmt.Sprintf(`(() => {
+			let anchors = document.querySelectorAll('%s');
+			return Array.from(anchors)
+				.map(a => a.href)
+				.filter(h => h.startsWith("http"));
+		})()`, sel)
+
+		chromedp.Run(ctx, chromedp.Evaluate(linksJS, &links))
+		if len(links) > 0 {
+			log.Printf("Google AI: found %d links with selector %s\n", len(links), sel)
+			break
+		}
+	}
+
+	// fallback: all external links excluding google.com
 	if len(links) == 0 {
-		log.Println("Fallback: extracting all external links")
-
-		_ = chromedp.Run(ctx,
+		log.Println("Google AI: fallback link extraction")
+		chromedp.Run(ctx,
 			chromedp.Evaluate(`(() => {
-				let anchors = document.querySelectorAll('a[href]');
-				let links = new Set();
-
-				anchors.forEach(a => {
-					if (a.href.startsWith("http") &&
-						!a.href.includes("google.com") &&
-						!a.href.includes("accounts.google")) {
-						links.add(a.href);
-					}
-				});
-
-				return Array.from(links);
+				let seen = new Set();
+				return Array.from(document.querySelectorAll('a[href]'))
+					.map(a => a.href)
+					.filter(h => {
+						if (!h.startsWith("http")) return false;
+						if (h.includes("google.com")) return false;
+						if (h.includes("accounts.google")) return false;
+						if (seen.has(h)) return false;
+						seen.add(h);
+						return true;
+					});
 			})()`, &links),
 		)
 	}
 
 	// ---------------- FINAL ----------------
-	// result.Content = content
 	result.InternalLinks = parser.CleanLinks(links)
 
 	if content == "" {
+		// don't block saving links just because content selector missed
+		if len(result.InternalLinks) > 0 {
+			log.Println("Google AI: no content but has links, saving anyway")
+			return result, nil
+		}
 		return result, errors.New("no content extracted")
 	}
 

@@ -3,6 +3,7 @@ package scraper
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -81,9 +82,10 @@ func (g *GeminiScraper) Scrape(ctx context.Context, query string) (models.Result
 
 	// Step 3: insert text (THIS is key)
 	err = chromedp.Run(ctx,
-		chromedp.Evaluate(`
-			document.execCommand('insertText', false, "`+query+`");
-		`, nil),
+		chromedp.Evaluate(
+			fmt.Sprintf(`document.execCommand('insertText', false, %q);`, query),
+			nil,
+		),
 	)
 
 	if err != nil {

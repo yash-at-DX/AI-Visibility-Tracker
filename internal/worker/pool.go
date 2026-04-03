@@ -1,47 +1,53 @@
 package worker
 
-import (
-	"context"
-	"log"
+import "sync"
 
-	"github.com/yash-at-DX/ai-scraper/internal/models"
-	"github.com/yash-at-DX/ai-scraper/internal/scraper"
-)
+type Job[T any] struct {
+	Input T
+}
 
-func StartWorkerPool(
-	ctx context.Context,
-	workers int,
-	queries []string,
-	s scraper.Scraper,
-) []models.Result {
-	jobs := make(chan string)
-	results := make(chan models.Result)
+type Result[I, O any] struct {
+	Input  I
+	Output O
+	Err    error
+}
 
-	for i := 0; i < workers; i++ {
-		go func(id int) {
-			for q := range jobs {
-				res, err := s.Scrape(ctx, q)
-				if err != nil {
-					log.Println("Error: ", err)
-					continue
-				}
+func RunPool[I, O any](
+	jobs []I,
+	workerCount int,
+	fn func(I) (O, error),
+) []Result[I, O] {
+	jobCh := make(chan I, len(jobs))
+	resultCh := make(chan Result[I, O], len(jobs))
 
-				results <- res
+	var wg sync.WaitGroup
+
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			for input := range jobCh {
+				out, err := fn(input)
+				resultCh <- Result[I, O]{Input: input, Output: out, Err: err}
 			}
-		}(i)
+		}()
+
 	}
+
+	for _, j := range jobs {
+		jobCh <- j
+	}
+	close(jobCh)
 
 	go func() {
-		for _, q := range queries {
-			jobs <- q
-		}
-		close(jobs)
+		wg.Wait()
+		close(resultCh)
 	}()
 
-	var output []models.Result
-	for i := 0; i < len(queries); i++ {
-		output = append(output, <-results)
+	var results []Result[I, O]
+	for r := range resultCh {
+		results = append(results, r)
 	}
-
-	return output
+	return results
 }
