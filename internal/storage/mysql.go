@@ -41,16 +41,38 @@ func createTables() {
 	id INT AUTO_INCREMENT PRIMARY KEY,
 	project_id varchar(255),
 	query TEXT,
+	category VARCHAR(255),
 	source VARCHAR(50),
 	internal_links JSON,
+	search_volume INT DEFAULT 0,
 	created_at DATE DEFAULT (CURDATE())
 	);
 	`
+
+	// aiVisibilityQueries := `
+	// 	CREATE TABLE IF NOT EXISTS ai_visibility_queries (
+	// 	id INT AUTO_INCREMENT PRIMARY KEY,
+	// 	project_id VARCHAR(255) NOT NULL,
+	// 	query TEXT NOT NULL,
+	// 	category VARCHAR(255),
+	// 	search_volume INT DEFAULT 0,
+	// 	created_at DATE DEFAULT (CURDATE()),
+
+	// 	INDEX idx_project_id (project_id),
+	// 	INDEX idx_category (category),
+	// 	INDEX idx_search_volume (search_volume)
+	// )
+	// `
 
 	_, err := DB.Exec(aiVisibility)
 	if err != nil {
 		log.Fatal("Failed to create ai_visibility: ", err)
 	}
+
+	// _, err == DB.Exec(aiVisibilityQueries)
+	// if err != nil {
+	// 	log.Fatal("Failed to create ai_visibility: ", err)
+	// }
 
 	log.Println("Tables ensured")
 }
