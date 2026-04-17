@@ -74,18 +74,18 @@ func ProcessQuery(q models.VisibilityQuery) {
 			name:    "chatgpt",
 			factory: func(b *browser.Browser) scraper.Scraper { return scraper.NewChatGPTScraper(b) },
 		},
-		// {
-		// 	name:    "gemini",
-		// 	factory: func(b *browser.Browser) scraper.Scraper { return scraper.NewGeminiScraper(b) },
-		// },
-		// {
-		// 	name:    "perplexity",
-		// 	factory: func(b *browser.Browser) scraper.Scraper { return scraper.NewPerplexityScraper(b) },
-		// },
-		// {
-		// 	name:    "google_ai",
-		// 	factory: func(b *browser.Browser) scraper.Scraper { return scraper.NewGoogleAIScraper(b) },
-		// },
+		{
+			name:    "gemini",
+			factory: func(b *browser.Browser) scraper.Scraper { return scraper.NewGeminiScraper(b) },
+		},
+		{
+			name:    "perplexity",
+			factory: func(b *browser.Browser) scraper.Scraper { return scraper.NewPerplexityScraper(b) },
+		},
+		{
+			name:    "google_ai",
+			factory: func(b *browser.Browser) scraper.Scraper { return scraper.NewGoogleAIScraper(b) },
+		},
 	}
 
 	var wg sync.WaitGroup
@@ -104,7 +104,7 @@ func ProcessQuery(q models.VisibilityQuery) {
 		go func(j scraperJob) {
 			defer wg.Done()
 
-			b := browser.NewBrowser(false)
+			b := browser.NewBrowser(true)
 			defer func() {
 				b.Close()
 				log.Printf("[%s] browser closed\n", j.name)
@@ -128,6 +128,9 @@ func ProcessQuery(q models.VisibilityQuery) {
 			}
 
 			res.ProjectID = q.ProjectID
+			res.Category = q.Category
+			res.SearchVolume = q.SearchVolume
+			res.Intent = q.Intent
 
 			if err := storage.InsertResults([]models.Result{res}); err != nil {
 				log.Printf("[%s] insert failed: %v\n", j.name, err)

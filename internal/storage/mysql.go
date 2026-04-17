@@ -42,6 +42,7 @@ func createTables() {
 	project_id varchar(255),
 	query TEXT,
 	category VARCHAR(255),
+	Intent 	 VARCHAR(255),
 	source VARCHAR(50),
 	internal_links JSON,
 	search_volume INT DEFAULT 0,
@@ -55,6 +56,7 @@ func createTables() {
 	// 	project_id VARCHAR(255) NOT NULL,
 	// 	query TEXT NOT NULL,
 	// 	category VARCHAR(255),
+	//  intent	 VARCHAR(255),
 	// 	search_volume INT DEFAULT 0,
 	// 	created_at DATE DEFAULT (CURDATE()),
 

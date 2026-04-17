@@ -10,8 +10,9 @@ import (
 
 func GetVisibiltyQueries() ([]models.VisibilityQuery, error) {
 	rows, err := DB.Query(`
-		SELECT project_id, queries
+		SELECT project_id, query, category, intent, search_volume
 		FROM ai_visibility_queries
+		WHERE created_at = CURDATE()
 	`)
 	if err != nil {
 		return nil, err
@@ -23,7 +24,7 @@ func GetVisibiltyQueries() ([]models.VisibilityQuery, error) {
 
 	for rows.Next() {
 		var v models.VisibilityQuery
-		if err := rows.Scan(&v.ProjectID, &v.Query); err != nil {
+		if err := rows.Scan(&v.ProjectID, &v.Query, &v.Category, &v.Intent, &v.SearchVolume); err != nil {
 			return nil, err
 		}
 		results = append(results, v)
@@ -32,47 +33,19 @@ func GetVisibiltyQueries() ([]models.VisibilityQuery, error) {
 	return results, nil
 }
 
-// func InsertResults(results []models.Result) error {
-// 	if len(results) == 0 {
-// 		return nil
-// 	}
-// 	baseQuery := `
-// 	INSERT INTO ai_visibility (project_id, query, source, internal_links)
-// 	VALUES `
-// 	vals := []interface{}{}
-// 	placeholders := []string{}
-
-// 	for _, r := range results {
-// 		placeholders = append(placeholders, "(?,?,?,?)")
-
-// 		linksJson, _ := json.Marshal(r.InternalLinks)
-
-// 		vals = append(vals, r.ProjectID, r.Query, r.Source, linksJson)
-// 	}
-
-// 	query := baseQuery + strings.Join(placeholders, ",")
-
-// 	_, err := DB.Exec(query, vals...)
-// 	if err != nil {
-// 		log.Println("Final Query: ", query)
-// 		return err
-// 	}
-// 	return nil
-// }
-
 func InsertResults(results []models.Result) error {
 	if len(results) == 0 {
 		return nil
 	}
 
-	baseQuery := `INSERT INTO ai_visibility (project_id, query, source, internal_links) VALUES `
+	baseQuery := `INSERT INTO ai_visibility (project_id, query, category, intent, source, internal_links, search_volume) VALUES `
 	vals := []interface{}{}
 	placeholders := []string{}
 
 	for _, r := range results {
-		placeholders = append(placeholders, "(?,?,?,?)")
+		placeholders = append(placeholders, "(?,?,?,?,?,?, ?)")
 		linksJson, _ := json.Marshal(r.InternalLinks)
-		vals = append(vals, r.ProjectID, r.Query, r.Source, linksJson)
+		vals = append(vals, r.ProjectID, r.Query, r.Category, r.Intent, r.Source, linksJson, r.SearchVolume)
 	}
 
 	query := baseQuery + strings.Join(placeholders, ",")
