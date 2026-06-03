@@ -12,7 +12,6 @@ func GetVisibiltyQueries() ([]models.VisibilityQuery, error) {
 	rows, err := DB.Query(`
 		SELECT project_id, query, category, intent, search_volume
 		FROM ai_visibility_queries
-		WHERE created_at = CURDATE()
 	`)
 	if err != nil {
 		return nil, err
@@ -43,7 +42,7 @@ func InsertResults(results []models.Result) error {
 	placeholders := []string{}
 
 	for _, r := range results {
-		placeholders = append(placeholders, "(?,?,?,?,?,?, ?)")
+		placeholders = append(placeholders, "(?,?,?,?,?,?,?)")
 		linksJson, _ := json.Marshal(r.InternalLinks)
 		vals = append(vals, r.ProjectID, r.Query, r.Category, r.Intent, r.Source, linksJson, r.SearchVolume)
 	}

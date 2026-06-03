@@ -12,6 +12,26 @@ import (
 	"github.com/yash-at-DX/ai-scraper/internal/parser"
 )
 
+// PerplexityScraper uses DOM-based extraction rather than CDP network interception.
+//
+// Why DOM (unlike Google AI / ChatGPT / Gemini which use CDP):
+//   • Perplexity's citation URLs live in a thread-specific endpoint that's
+//     hard to identify reliably, and capturing the wrong endpoint pollutes
+//     the dataset with unrelated source recommendations.
+//   • The Sources tab uses semantic markup — role="tab" aria-controls="sources"
+//     and role="tabpanel" — which is stable across redesigns.
+//   • The sources panel renders synchronously once the answer completes and
+//     contains plain <a href> elements. Extraction is one line of JS.
+//   • The previous DOM-based version of this scraper worked reliably; CDP
+//     experimentation added complexity without benefit for this platform.
+//
+// What to maintain over time:
+//   • If Perplexity renames the "Sources" tab, update the tab-finding JS
+//     (currently uses aria-controls="sources", role="tab", and text-match
+//     fallbacks).
+//   • The content selector is '[id^="markdown-content"]' which has been
+//     stable for >1 year; multiple fallbacks are included in case it changes.
+
 type PerplexityScraper struct {
 	Browser *browser.Browser
 }
@@ -36,8 +56,8 @@ func (p *PerplexityScraper) Scrape(ctx context.Context, query string) (models.Re
 	var content string
 	var links []string
 
-	// ---------------- STEP 1: NAVIGATE ----------------
-	log.Println("Step 1: Navigate")
+	// ── STEP 1: navigate ──────────────────────────────────────────────────────
+	log.Println("Perplexity: Navigate")
 
 	err := chromedp.Run(ctx,
 		chromedp.Navigate("https://www.perplexity.ai/"),
@@ -48,77 +68,92 @@ func (p *PerplexityScraper) Scrape(ctx context.Context, query string) (models.Re
 
 	time.Sleep(5 * time.Second)
 
-	// ---------------- STEP 2: VERIFY PAGE ----------------
 	var title string
-	err = chromedp.Run(ctx,
-		chromedp.Title(&title),
-	)
-	if err != nil {
-		return result, err
+	chromedp.Run(ctx, chromedp.Title(&title))
+	log.Println("Perplexity: page title:", title)
+
+	// ── STEP 2: type and submit query ─────────────────────────────────────────
+	log.Println("Perplexity: Typing query")
+
+	// Try the known input selector first, then fall back to alternates.
+	inputSelectors := []string{
+		`#ask-input`,
+		`textarea[placeholder*="Ask"]`,
+		`textarea[placeholder*="ask"]`,
+		`[contenteditable="true"]`,
 	}
-	log.Println("Page title:", title)
 
-	// ---------------- STEP 3: TYPE QUERY ----------------
-	log.Println("Step 3: Typing query")
+	typed := false
+	for _, sel := range inputSelectors {
+		err = chromedp.Run(ctx,
+			chromedp.WaitVisible(sel, chromedp.ByQuery),
+			chromedp.Click(sel, chromedp.ByQuery),
+			chromedp.SendKeys(sel, query),
+			chromedp.SendKeys(sel, "\n"),
+		)
+		if err == nil {
+			typed = true
+			break
+		}
+	}
 
-	err = chromedp.Run(ctx,
-		chromedp.WaitVisible(`#ask-input`, chromedp.ByQuery),
-		chromedp.Click(`#ask-input`, chromedp.ByQuery),
-		chromedp.SendKeys(`#ask-input`, query),
-		chromedp.SendKeys(`#ask-input`, "\n"),
-	)
-	if err != nil {
+	if !typed {
 		return result, errors.New("failed to type query")
 	}
 
-	log.Println("Query submitted")
+	log.Println("Perplexity: query submitted")
 
-	// ---------------- STEP 4: WAIT FOR RESPONSE START ----------------
-	log.Println("Step 4: Waiting for response start")
+	// ── STEP 3: wait for response to start ────────────────────────────────────
+	log.Println("Perplexity: waiting for response start")
 
 	started := false
-
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 12; i++ {
 		var txt string
-
-		chromedp.Run(ctx,
-			chromedp.Evaluate(`document.body.innerText`, &txt),
-		)
-
+		chromedp.Run(ctx, chromedp.Evaluate(`document.body.innerText`, &txt))
 		if len(txt) > 300 {
 			started = true
 			break
 		}
-
 		time.Sleep(2 * time.Second)
 	}
-
 	if !started {
 		return result, errors.New("response did not start")
 	}
 
-	// ---------------- STEP 5: WAIT FOR FULL RESPONSE ----------------
-	log.Println("Step 5: Waiting for full response (stability check)")
+	// ── STEP 4: wait for content to stabilise ─────────────────────────────────
+	log.Println("Perplexity: waiting for full response (stability check)")
+
+	// Multiple content selectors — Perplexity has historically used these.
+	// Order matters: most specific first, then progressively more permissive.
+	contentJS := `(() => {
+		let sels = [
+			'[id^="markdown-content"]',
+			'.prose',
+			'[data-testid="answer"]',
+			'.answer-content',
+			'[class*="MarkdownContent"]',
+			'[class*="Answer"]'
+		];
+		for (let sel of sels) {
+			let els = document.querySelectorAll(sel);
+			if (els.length) {
+				let text = Array.from(els).map(e => e.innerText).join("\n").trim();
+				if (text.length > 50) return text;
+			}
+		}
+		return "";
+	})()`
 
 	stableCount := 0
 	var lastLen int
-
-	for i := 0; i < 15; i++ {
+	for i := 0; i < 20; i++ {
 		var current string
-
-		err := chromedp.Run(ctx,
-			chromedp.Evaluate(`(() => {
-				let el = document.querySelector('[id^="markdown-content"]');
-				return el ? el.innerText : "";
-			})()`, &current),
-		)
-
+		err := chromedp.Run(ctx, chromedp.Evaluate(contentJS, &current))
 		if err != nil {
+			time.Sleep(2 * time.Second)
 			continue
 		}
-
 		currentLen := len(current)
-		log.Println("Current length:", currentLen)
 
 		if currentLen > 200 && currentLen == lastLen {
 			stableCount++
@@ -131,7 +166,7 @@ func (p *PerplexityScraper) Scrape(ctx context.Context, query string) (models.Re
 			lastLen = currentLen
 		}
 
-		// early break for long responses
+		// Early exit for long stable responses
 		if currentLen > 1500 {
 			content = current
 			break
@@ -140,50 +175,98 @@ func (p *PerplexityScraper) Scrape(ctx context.Context, query string) (models.Re
 		time.Sleep(2 * time.Second)
 	}
 
-	log.Println("Final content length:", len(content))
+	log.Printf("Perplexity: final content length: %d", len(content))
 
-	// ---------------- STEP 6: EXTRACT LINKS FROM LINKS TAB ----------------
-	log.Println("Step 6: Extracting links (Links tab)")
+	// ── STEP 5: click the Sources tab ─────────────────────────────────────────
+	log.Println("Perplexity: clicking Sources tab")
 
-	// Click "Links" tab
-	err = chromedp.Run(ctx,
-		chromedp.Click(`button[role="tab"][aria-controls*="sources"]`, chromedp.ByQuery),
-	)
+	// Resilient tab finder: try semantic markup first, then text-match fallbacks.
+	chromedp.Run(ctx, chromedp.Evaluate(`(() => {
+		// Approach 1: tab with aria-controls pointing at sources
+		let tab = document.querySelector('[role="tab"][aria-controls*="sources"]');
+		if (tab) { tab.click(); return "aria_controls"; }
 
-	if err != nil {
-		log.Println("⚠️ Could not click Links tab:", err)
-	}
+		// Approach 2: tab with text "Sources" or "Links"
+		let tabs = Array.from(document.querySelectorAll('[role="tab"]'));
+		let found = tabs.find(t => {
+			let txt = (t.innerText || "").trim().toLowerCase();
+			return txt === "sources" || txt === "links" ||
+			       txt.startsWith("sources") ||
+			       /^\d+\s+sources$/.test(txt);
+		});
+		if (found) { found.click(); return "text_match_tab"; }
+
+		// Approach 3: any button with those labels
+		let btns = Array.from(document.querySelectorAll('button, a'));
+		let btn = btns.find(b => {
+			let txt = (b.innerText || "").trim().toLowerCase();
+			return txt === "sources" || txt === "links" ||
+			       /^\d+\s+sources$/.test(txt);
+		});
+		if (btn) { btn.click(); return "text_match_button"; }
+
+		return "not_found";
+	})()`, nil))
 
 	time.Sleep(2 * time.Second)
 
-	// Extract links from panel
-	err = chromedp.Run(ctx,
-		chromedp.Evaluate(`(() => {
-			let panel = document.querySelector('[role="tabpanel"][id*="sources"]');
-			if (!panel) return [];
+	// ── STEP 6: extract links from the Sources panel ──────────────────────────
+	log.Println("Perplexity: extracting links")
 
-			let links = new Set();
+	chromedp.Run(ctx, chromedp.Evaluate(`(() => {
+		let links = new Set();
 
-			panel.querySelectorAll("a[href]").forEach(a => {
-				if (a.href && a.href.startsWith("http")) {
+		// Approach 1: the active sources tabpanel (semantic markup)
+		let panel = document.querySelector('[role="tabpanel"][id*="sources"]') ||
+		            document.querySelector('[role="tabpanel"]');
+		if (panel) {
+			panel.querySelectorAll('a[href]').forEach(a => {
+				if (a.href && a.href.startsWith('http') &&
+				    !a.href.includes('perplexity.ai')) {
 					links.add(a.href);
 				}
 			});
+		}
 
-			return Array.from(links);
-		})()`, &links),
-	)
+		// Approach 2: source-card containers (class name heuristic)
+		if (links.size === 0) {
+			let containers = document.querySelectorAll(
+				'[class*="Source"], [class*="source"], [class*="Citation"]'
+			);
+			containers.forEach(c => {
+				c.querySelectorAll('a[href]').forEach(a => {
+					if (a.href && a.href.startsWith('http') &&
+					    !a.href.includes('perplexity.ai')) {
+						links.add(a.href);
+					}
+				});
+			});
+		}
 
-	if err != nil {
-		log.Println("Link extraction error:", err)
-	}
+		// Approach 3: hard fallback — any external link on the page that's
+		// not a social share or Perplexity-owned URL.
+		if (links.size === 0) {
+			document.querySelectorAll('a[href]').forEach(a => {
+				if (a.href && a.href.startsWith('http') &&
+				    !a.href.includes('perplexity.ai') &&
+				    !a.href.includes('twitter.com') &&
+				    !a.href.includes('x.com') &&
+				    !a.href.includes('linkedin.com/share')) {
+					links.add(a.href);
+				}
+			});
+		}
 
-	// ---------------- FINAL ----------------
-	// result.Content = content
+		return Array.from(links);
+	})()`, &links))
+
+	log.Printf("Perplexity: extracted %d raw links", len(links))
+
+	// ── FINAL ─────────────────────────────────────────────────────────────────
 	result.InternalLinks = parser.CleanLinks(links)
 
-	if content == "" {
-		return result, errors.New("no content extracted")
+	if content == "" && len(result.InternalLinks) == 0 {
+		return result, errors.New("no content or links extracted")
 	}
 
 	return result, nil

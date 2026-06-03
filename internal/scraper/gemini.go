@@ -5,13 +5,95 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
+	"strings"
 	"time"
 
+	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
 	"github.com/yash-at-DX/ai-scraper/internal/browser"
 	"github.com/yash-at-DX/ai-scraper/internal/models"
 	"github.com/yash-at-DX/ai-scraper/internal/parser"
 )
+
+// geminiStreamRe matches Gemini's streaming endpoint.
+// The response is a chunked body with multiple JSON-encoded array segments
+// containing the answer text and source URLs at varying nesting depths.
+// geminiStreamRe matches Gemini's main answer stream endpoint.
+//
+// Note on anonymous Gemini citations:
+// When queries are submitted with "with sources" appended (see Scrape()),
+// anonymous Gemini performs web grounding and returns citation links in the
+// DOM via a Sources sidebar panel (🔗 Sources button in the response).
+// The StreamGenerate response body only contains UI font assets, not URLs,
+// so we rely on the DOM fallback for citation extraction.
+// CDP capture here is kept only to confirm the stream completed.
+var geminiStreamRe = regexp.MustCompile(`BardFrontendService/StreamGenerate`)
+
+// geminiHrefRe matches plain http/https URLs after the body is unescaped.
+// Stops at whitespace, quotes, backslashes, brackets, and braces.
+var geminiHrefRe = regexp.MustCompile(`https?://[^\s"\\<>\]\[}{)]+`)
+
+// parseGeminiStream extracts citation URLs from the raw Gemini stream body.
+//
+// Gemini wraps content in multiply-encoded JSON: outer array → JSON-encoded
+// inner string → JSON-encoded another inner string → eventually URLs.
+// Rather than navigating the structure, we iteratively unescape the entire
+// body until URLs become plain text, then regex-match them.
+func parseGeminiStream(body []byte) (links []string) {
+	raw := string(body)
+
+	// Strip the )]}' anti-XSSI prefix if present (first line is length marker)
+	if idx := strings.Index(raw, "\n"); idx != -1 {
+		raw = raw[idx+1:]
+	}
+
+	// Debug: count http occurrences and show first URL context
+
+	// Iteratively unescape until the body stops changing.
+	// Handles multi-level nesting (\\\" → \" → ") in one loop.
+	prev := ""
+	unescaped := raw
+	for i := 0; i < 6 && unescaped != prev; i++ {
+		prev = unescaped
+		unescaped = strings.ReplaceAll(unescaped, `\/`, `/`)
+		unescaped = strings.ReplaceAll(unescaped, `\"`, `"`)
+		unescaped = strings.ReplaceAll(unescaped, `\\`, `\`)
+	}
+
+	seen := make(map[string]bool)
+	skipDomains := []string{
+		"google.com",
+		"googleapis.com",
+		"gstatic.com",
+		"youtube.com",
+		"googleusercontent.com",
+		"gemini.google",
+	}
+
+	for _, m := range geminiHrefRe.FindAllString(unescaped, -1) {
+		u := strings.TrimRight(m, `.,;:!?)"\`)
+		if len(u) < 12 || !strings.Contains(u, ".") {
+			continue
+		}
+		skip := false
+		for _, domain := range skipDomains {
+			if strings.Contains(u, domain) {
+				skip = true
+				break
+			}
+		}
+		if skip || seen[u] {
+			continue
+		}
+		seen[u] = true
+		links = append(links, u)
+	}
+
+	return links
+}
+
+// ── scraper ───────────────────────────────────────────────────────────────────
 
 type GeminiScraper struct {
 	Browser *browser.Browser
@@ -34,13 +116,14 @@ func (g *GeminiScraper) Scrape(ctx context.Context, query string) (models.Result
 		Source: g.Name(),
 	}
 
-	var content string
-	var links []string
+	// ── STEP 1: register CDP listener BEFORE navigation ───────────────────────
+	cdpCh := RegisterCDPCapture(ctx, geminiStreamRe, 10, chromedp.ListenTarget)
 
-	// ---------------- STEP 1: NAVIGATE ----------------
+	// ── STEP 2: navigate ──────────────────────────────────────────────────────
 	log.Println("Gemini: Navigate")
 
 	err := chromedp.Run(ctx,
+		network.Enable(),
 		chromedp.Navigate("https://gemini.google.com/"),
 	)
 	if err != nil {
@@ -49,145 +132,166 @@ func (g *GeminiScraper) Scrape(ctx context.Context, query string) (models.Result
 
 	time.Sleep(6 * time.Second)
 
-	// ---------------- STEP 2: TYPE QUERY ----------------
-	log.Println("Typing query")
+	// ── STEP 3: type and submit query ─────────────────────────────────────────
+	log.Println("Gemini: Typing query")
 
-	// Step 1: ensure page is ready
 	time.Sleep(2 * time.Second)
 
-	// Step 2: click editor via JS (more reliable than chromedp.Click)
-	err = chromedp.Run(ctx,
-		chromedp.Evaluate(`
-			(() => {
-				let el = document.querySelector('.ql-editor');
-				if (el) {
-					el.click();
-					return true;
-				}
-				return false;
-			})()
-		`, nil),
-	)
-
-	if err != nil {
-		log.Println("JS click failed, trying mouse click fallback")
-
-		// fallback: click center screen
-		chromedp.Run(ctx,
-			chromedp.MouseClickXY(600, 500),
-		)
-	}
+	chromedp.Run(ctx, chromedp.Evaluate(`(() => {
+		let el = document.querySelector('.ql-editor') ||
+		         document.querySelector('[contenteditable="true"]') ||
+		         document.querySelector('rich-textarea');
+		if (el) { el.click(); el.focus(); return true; }
+		return false;
+	})()`, nil))
 
 	time.Sleep(1 * time.Second)
 
-	// Step 3: insert text (THIS is key)
+	// Append "with sources" so Gemini performs web grounding and returns
+	// citation links even for anonymous sessions.
+	queryWithSources := query + " with sources"
+
 	err = chromedp.Run(ctx,
 		chromedp.Evaluate(
-			fmt.Sprintf(`document.execCommand('insertText', false, %q);`, query),
+			fmt.Sprintf(`document.execCommand('insertText', false, %q);`, queryWithSources),
 			nil,
 		),
 	)
-
 	if err != nil {
-		return result, errors.New("failed to insert text")
+		err = chromedp.Run(ctx,
+			chromedp.Evaluate(fmt.Sprintf(`(() => {
+				let el = document.querySelector('.ql-editor') ||
+				         document.querySelector('[contenteditable="true"]');
+				if (!el) return false;
+				el.focus();
+				el.innerText = %q;
+				el.dispatchEvent(new Event('input', { bubbles: true }));
+				return true;
+			})()`, queryWithSources), nil),
+		)
+		if err != nil {
+			return result, errors.New("failed to insert text")
+		}
 	}
 
-	// Step 4: press enter
 	time.Sleep(500 * time.Millisecond)
 
-	err = chromedp.Run(ctx,
-		chromedp.KeyEvent("\n"),
-	)
-
+	err = chromedp.Run(ctx, chromedp.KeyEvent("\n"))
 	if err != nil {
 		return result, err
 	}
 
-	log.Println("Query submitted")
+	log.Println("Gemini: Query submitted — waiting for stream (max 60s)")
 
-	// ---------------- STEP 3: WAIT FOR FULL RESPONSE ----------------
-	log.Println("Waiting for response")
+	// ── STEP 4: collect CDP response ──────────────────────────────────────────
+	var cdpLinks []string
+	seenURLs := make(map[string]bool)
+	deadline := time.After(60 * time.Second)
 
-	stableCount := 0
-	var lastLen int
-
-	for i := 0; i < 15; i++ {
-		var current string
-
-		err := chromedp.Run(ctx,
-			chromedp.Evaluate(`(() => {
-				let els = document.querySelectorAll('.markdown-main-panel');
-				if (!els.length) return "";
-				return els[els.length - 1].innerText;
-			})()`, &current),
-		)
-
-		if err != nil {
-			continue
+collect:
+	for {
+		select {
+		case body := <-cdpCh:
+			log.Printf("Gemini CDP: captured %d bytes from %s",
+				len(body.Body), body.URL)
+			for _, u := range parseGeminiStream(body.Body) {
+				if !seenURLs[u] {
+					seenURLs[u] = true
+					cdpLinks = append(cdpLinks, u)
+				}
+			}
+			log.Printf("Gemini CDP: running total links=%d", len(cdpLinks))
+		case <-deadline:
+			log.Printf("Gemini CDP: collection window closed  links=%d",
+				len(cdpLinks))
+			break collect
 		}
+	}
 
-		currentLen := len(current)
-		log.Println("Current length:", currentLen)
+	// ── STEP 5: DOM fallback ──────────────────────────────────────────────────
+	var content string
+	var links []string
 
-		if currentLen > 200 && currentLen == lastLen {
-			stableCount++
-			if stableCount >= 3 {
+	if len(cdpLinks) > 0 {
+		links = cdpLinks
+	} else {
+		log.Println("Gemini: CDP got no links — falling back to DOM extraction")
+
+		contentJS := `(() => {
+			let sels = [
+				'.markdown-main-panel', '.response-content',
+				'model-response', '[data-test-id="response"]',
+				'[class*="ModelResponse"]', '[class*="response-text"]'
+			];
+			for (let sel of sels) {
+				let els = document.querySelectorAll(sel);
+				if (!els.length) continue;
+				let text = els[els.length - 1].innerText.trim();
+				if (text.length > 50) return text;
+			}
+			return "";
+		})()`
+
+		stableCount := 0
+		var lastLen int
+		for i := 0; i < 15; i++ {
+			var current string
+			chromedp.Run(ctx, chromedp.Evaluate(contentJS, &current))
+			currentLen := len(current)
+			if currentLen > 200 && currentLen == lastLen {
+				stableCount++
+				if stableCount >= 3 {
+					content = current
+					break
+				}
+			} else {
+				stableCount = 0
+				lastLen = currentLen
+			}
+			if currentLen > 1200 {
 				content = current
 				break
 			}
-		} else {
-			stableCount = 0
-			lastLen = currentLen
+			time.Sleep(2 * time.Second)
 		}
 
-		time.Sleep(2 * time.Second)
-	}
+		chromedp.Run(ctx, chromedp.Evaluate(`(() => {
+			let btn = document.querySelector('button[aria-label*="source"]') ||
+			          document.querySelector('button[aria-label*="Source"]');
+			if (btn) { btn.click(); return; }
+			let btns = Array.from(document.querySelectorAll('button'));
+			let numbered = btns.find(b => b.innerText && /^\d+$/.test(b.innerText.trim()));
+			if (numbered) { numbered.click(); return; }
+			let textBtn = btns.find(b =>
+				b.innerText && b.innerText.toLowerCase().includes("source"));
+			if (textBtn) textBtn.click();
+		})()`, nil))
+		time.Sleep(3 * time.Second)
 
-	log.Println("Final content length:", len(content))
-
-	// ---------------- STEP 4: CLICK SOURCE BUTTON ----------------
-	log.Println("Opening sources")
-
-	err = chromedp.Run(ctx,
-		chromedp.Click(`button[aria-label*="source"]`, chromedp.ByQuery),
-	)
-
-	if err != nil {
-		log.Println("⚠️ Could not click source button:", err)
-	}
-
-	time.Sleep(2 * time.Second)
-
-	// ---------------- STEP 5: EXTRACT LINKS ----------------
-	log.Println("Extracting links")
-
-	err = chromedp.Run(ctx,
-		chromedp.Evaluate(`(() => {
-			let panel = document.querySelector('context-sidebar');
-			if (!panel) return [];
-
+		chromedp.Run(ctx, chromedp.Evaluate(`(() => {
 			let links = new Set();
-
-			panel.querySelectorAll("a[href]").forEach(a => {
-				if (a.href && a.href.startsWith("http")) {
+			let panel = document.querySelector('context-sidebar') ||
+			            document.querySelector('[class*="sidebar"]');
+			let scope = panel || document;
+			scope.querySelectorAll('a[href]').forEach(a => {
+				if (a.href && a.href.startsWith('http') &&
+				    !a.href.includes('google.com') &&
+				    !a.href.includes('gemini.google'))
 					links.add(a.href);
-				}
 			});
-
 			return Array.from(links);
-		})()`, &links),
-	)
+		})()`, &links))
 
-	if err != nil {
-		log.Println("Link extraction error:", err)
+		log.Printf("Gemini DOM fallback: content=%d chars  links=%d",
+			len(content), len(links))
 	}
 
-	// ---------------- FINAL ----------------
-	// result.Content = content
+	log.Printf("Gemini: final links=%d", len(links))
+
 	result.InternalLinks = parser.CleanLinks(links)
 
-	if content == "" {
-		return result, errors.New("no content extracted")
+	if content == "" && len(result.InternalLinks) == 0 {
+		return result, errors.New("no content or links extracted")
 	}
 
 	return result, nil

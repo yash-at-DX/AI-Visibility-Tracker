@@ -7,12 +7,20 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/joho/godotenv"
 )
 
 var DB *sql.DB
 
 func InitDB() error {
+	if envFile := os.Getenv("ENV_FILE"); envFile != "" {
+		if err := godotenv.Overload(envFile); err != nil {
+			log.Fatalf("failed to load env file %q: %v", envFile, err)
+		}
+	}
+
 	dsn := os.Getenv("MYSQL_DSN") //user:pass@tcp(127.0.0.1:3306)/dbname
+	log.Println("Using DSN: ", dsn)
 
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
