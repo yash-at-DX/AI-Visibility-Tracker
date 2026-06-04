@@ -70,22 +70,22 @@ func ProcessQuery(q models.VisibilityQuery) {
 	}
 
 	jobs := []scraperJob{
-		// {
-		// 	name:    "chatgpt",
-		// 	factory: func(b *browser.Browser) scraper.Scraper { return scraper.NewChatGPTScraper(b) },
-		// },
+		{
+			name:    "chatgpt",
+			factory: func(b *browser.Browser) scraper.Scraper { return scraper.NewChatGPTScraper(b) },
+		},
 		{
 			name:    "gemini",
 			factory: func(b *browser.Browser) scraper.Scraper { return scraper.NewGeminiScraper(b) },
 		},
-		// {
-		// 	name:    "perplexity",
-		// 	factory: func(b *browser.Browser) scraper.Scraper { return scraper.NewPerplexityScraper(b) },
-		// },
-		// {
-		// 	name:    "google_ai",
-		// 	factory: func(b *browser.Browser) scraper.Scraper { return scraper.NewGoogleAIScraper(b) },
-		// },
+		{
+			name:    "perplexity",
+			factory: func(b *browser.Browser) scraper.Scraper { return scraper.NewPerplexityScraper(b) },
+		},
+		{
+			name:    "google_ai",
+			factory: func(b *browser.Browser) scraper.Scraper { return scraper.NewGoogleAIScraper(b) },
+		},
 	}
 
 	var wg sync.WaitGroup

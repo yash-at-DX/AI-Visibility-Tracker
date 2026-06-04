@@ -103,14 +103,20 @@ func (p *PerplexityScraper) Scrape(ctx context.Context, query string) (models.Re
 
 	log.Println("Perplexity: query submitted")
 
-	// ── STEP 3: wait for response to start ────────────────────────────────────
-	log.Println("Perplexity: waiting for response start")
+	// ── STEP 3: wait for navigation to search page ────────────────────────────
+	// After submit, Perplexity navigates to /search/<uuid>. Wait for that.
+	log.Println("Perplexity: waiting for search page navigation")
+	time.Sleep(3 * time.Second)
+
+	var currentURL string
+	chromedp.Run(ctx, chromedp.Evaluate(`window.location.href`, &currentURL))
+	log.Println("Perplexity: current URL:", currentURL)
 
 	started := false
-	for i := 0; i < 12; i++ {
+	for i := 0; i < 15; i++ {
 		var txt string
 		chromedp.Run(ctx, chromedp.Evaluate(`document.body.innerText`, &txt))
-		if len(txt) > 300 {
+		if len(txt) > 200 {
 			started = true
 			break
 		}
@@ -123,8 +129,7 @@ func (p *PerplexityScraper) Scrape(ctx context.Context, query string) (models.Re
 	// ── STEP 4: wait for content to stabilise ─────────────────────────────────
 	log.Println("Perplexity: waiting for full response (stability check)")
 
-	// Multiple content selectors — Perplexity has historically used these.
-	// Order matters: most specific first, then progressively more permissive.
+	// Multiple content selectors — covers both home-page and /search/<uuid> markup.
 	contentJS := `(() => {
 		let sels = [
 			'[id^="markdown-content"]',
@@ -132,16 +137,21 @@ func (p *PerplexityScraper) Scrape(ctx context.Context, query string) (models.Re
 			'[data-testid="answer"]',
 			'.answer-content',
 			'[class*="MarkdownContent"]',
-			'[class*="Answer"]'
+			'[class*="Answer"]',
+			'[class*="prose"]',
+			'[class*="content"]',
+			'[class*="response"]',
+			'section',
+			'main',
 		];
 		for (let sel of sels) {
 			let els = document.querySelectorAll(sel);
 			if (els.length) {
 				let text = Array.from(els).map(e => e.innerText).join("\n").trim();
-				if (text.length > 50) return text;
+				if (text.length > 80) return text;
 			}
 		}
-		return "";
+		return document.body.innerText.trim().substring(0, 3000);
 	})()`
 
 	stableCount := 0
