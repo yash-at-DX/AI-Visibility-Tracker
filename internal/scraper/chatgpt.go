@@ -31,12 +31,6 @@ var chatgptCitationRe = regexp.MustCompile(`https?://[^\s"\\<>']+utm_source=(?:c
 func parseChatGPTSSE(body []byte) (links []string) {
 	raw := string(body)
 
-	// Debug: log first 300 chars
-	preview := raw
-	if len(preview) > 300 {
-		preview = preview[:300]
-	}
-	log.Printf("ChatGPT SSE preview: %q", preview)
 
 	seen := make(map[string]bool)
 	for _, m := range chatgptCitationRe.FindAllString(raw, -1) {

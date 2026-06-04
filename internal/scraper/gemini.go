@@ -16,9 +16,6 @@ import (
 	"github.com/yash-at-DX/ai-scraper/internal/parser"
 )
 
-// geminiStreamRe matches Gemini's streaming endpoint.
-// The response is a chunked body with multiple JSON-encoded array segments
-// containing the answer text and source URLs at varying nesting depths.
 // geminiStreamRe matches Gemini's main answer stream endpoint.
 //
 // Note on anonymous Gemini citations:
@@ -47,8 +44,6 @@ func parseGeminiStream(body []byte) (links []string) {
 	if idx := strings.Index(raw, "\n"); idx != -1 {
 		raw = raw[idx+1:]
 	}
-
-	// Debug: count http occurrences and show first URL context
 
 	// Iteratively unescape until the body stops changing.
 	// Handles multi-level nesting (\\\" → \" → ") in one loop.
