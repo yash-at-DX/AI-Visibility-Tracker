@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 
 	"github.com/joho/godotenv"
 	"github.com/yash-at-DX/ai-scraper/internal/service"
@@ -9,8 +10,10 @@ import (
 )
 
 func main() {
-	if err := godotenv.Load(); err != nil {
-		log.Println("Failed to load .env file")
+	if envFile := os.Getenv("ENV_FILE"); envFile != "" {
+		if err := godotenv.Overload(envFile); err != nil {
+			log.Fatalf("failed to load env file %q: %v", envFile, err)
+		}
 	}
 
 	if err := storage.InitDB(); err != nil {
