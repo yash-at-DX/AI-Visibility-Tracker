@@ -10,6 +10,17 @@ import (
 )
 
 func main() {
+	// Subcommand dispatch. Bare invocation keeps the original cron behavior;
+	// "ondemand" runs the on-demand flow (stdin JSON in, status JSON out).
+	if len(os.Args) > 1 && os.Args[1] == "ondemand" {
+		runOnDemand()
+		return
+	}
+
+	runCron()
+}
+
+func runCron() {
 	if envFile := os.Getenv("ENV_FILE"); envFile != "" {
 		if err := godotenv.Overload(envFile); err != nil {
 			log.Fatalf("failed to load env file %q: %v", envFile, err)
@@ -26,45 +37,7 @@ func main() {
 	}
 	log.Printf("Found %d rows from DB\n", len(queries))
 
-	// expanded := expandQueries(queries)
-	// log.Printf("Expanded to %d individual queries\n", len(expanded))
-
-	// if len(expanded) == 0 {
-	// 	log.Println("Nothing to do. Exiting...")
-	// 	return
-	// }
-
 	service.RunAllScrapers(queries)
 
 	log.Println("Done. Exiting...")
 }
-
-// func expandQueries(queries []models.VisibilityQuery) []models.VisibilityQuery {
-// 	var expanded []models.VisibilityQuery
-
-// 	for _, q := range queries {
-// 		var questionList []string
-
-// 		var inner string
-// 		if err := json.Unmarshal([]byte(q.Query), &inner); err == nil {
-// 			json.Unmarshal([]byte(inner), &questionList)
-// 		}
-
-// 		if len(questionList) == 0 {
-// 			json.Unmarshal([]byte(q.Query), &questionList)
-// 		}
-
-// 		if len(questionList) > 0 {
-// 			for _, question := range questionList {
-// 				expanded = append(expanded, models.VisibilityQuery{
-// 					ProjectID: q.ProjectID,
-// 					Query:     question,
-// 				})
-// 			}
-// 		} else {
-// 			expanded = append(expanded, q)
-// 		}
-// 	}
-
-// 	return expanded
-// }
