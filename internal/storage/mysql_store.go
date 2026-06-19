@@ -8,19 +8,27 @@ import (
 	"github.com/yash-at-DX/ai-scraper/internal/models"
 )
 
-func GetVisibiltyQueries() ([]models.VisibilityQuery, error) {
-	rows, err := DB.Query(`
+// GetVisibiltyQueries fetches queries from ai_visibility_queries.
+// projectID: filter to a specific project; empty string = all projects.
+func GetVisibiltyQueries(projectID string) ([]models.VisibilityQuery, error) {
+	query := `
 		SELECT project_id, query, category, intent, search_volume
 		FROM ai_visibility_queries
-	`)
+	`
+	args := []interface{}{}
+
+	if projectID != "" {
+		query += " WHERE project_id = ?"
+		args = append(args, projectID)
+	}
+
+	rows, err := DB.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
-
 	defer rows.Close()
 
 	var results []models.VisibilityQuery
-
 	for rows.Next() {
 		var v models.VisibilityQuery
 		if err := rows.Scan(&v.ProjectID, &v.Query, &v.Category, &v.Intent, &v.SearchVolume); err != nil {

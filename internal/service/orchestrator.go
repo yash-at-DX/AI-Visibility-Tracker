@@ -3,37 +3,43 @@ package service
 import (
 	"context"
 	"log"
+	"strings"
 
 	"github.com/yash-at-DX/ai-scraper/internal/models"
 	"github.com/yash-at-DX/ai-scraper/internal/storage"
 )
 
-func RunAllScrapers(queries []models.VisibilityQuery) {
+// RunAllScrapers runs the cron flow for every query.
+// platforms: nil/empty = all platforms; otherwise only the named ones.
+func RunAllScrapers(queries []models.VisibilityQuery, platforms []string) {
+	if len(platforms) > 0 {
+		log.Printf("Platform filter active: %s\n", strings.Join(platforms, ", "))
+	}
 	for i, q := range queries {
 		log.Printf("[%d/%d] Processing: %s\n", i+1, len(queries), q.Query)
-		ProcessQuery(q)
+		ProcessQuery(q, platforms)
 	}
 }
 
-// ProcessQuery is the cron flow for a single DB-sourced query. Behavior is
-// unchanged from the original implementation:
-//   - per-source dedupe via IsAlreadyScraped (skip sources already done today)
-//   - scrape the remaining sources
-//   - never insert a result with zero links
-//   - carry project/category/intent/search_volume onto the result
-//
-// The actual scraping is delegated to RunQuery so the cron and on-demand flows
-// share one implementation.
-func ProcessQuery(q models.VisibilityQuery) {
-	// Decide which sources still need scraping today.
+// ProcessQuery is the cron flow for a single DB-sourced query.
+// platforms: nil/empty = all platforms (passed through from RunAllScrapers).
+func ProcessQuery(q models.VisibilityQuery, platforms []string) {
+	// Resolve which platforms to consider — either the global filter or all.
+	toConsider, err := ResolvePlatforms(platforms)
+	if err != nil {
+		log.Printf("invalid platform filter: %v\n", err)
+		return
+	}
+
+	// Per-source dedupe: skip sources already scraped today.
 	var pending []string
-	for _, name := range AllPlatforms() {
+	for _, name := range toConsider {
 		already, err := storage.IsAlreadyScraped(q.ProjectID, q.Query, name)
 		if err != nil {
 			log.Printf("[%s] DB check failed: %v\n", name, err)
 		}
 		if already {
-			log.Printf("[%s] skipping: %s\n", name, q.Query)
+			log.Printf("[%s] skipping (already scraped today): %s\n", name, q.Query)
 			continue
 		}
 		pending = append(pending, name)
@@ -51,7 +57,6 @@ func ProcessQuery(q models.VisibilityQuery) {
 	}
 
 	for _, res := range results {
-		// consistent rule: never insert if no links found
 		if len(res.InternalLinks) == 0 {
 			log.Printf("[%s] no links found, skipping insert\n", res.Source)
 			continue

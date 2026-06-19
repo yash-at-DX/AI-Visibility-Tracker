@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"os"
+	"strings"
 
 	"github.com/joho/godotenv"
 	"github.com/yash-at-DX/ai-scraper/internal/service"
@@ -10,8 +11,7 @@ import (
 )
 
 func main() {
-	// Subcommand dispatch. Bare invocation keeps the original cron behavior;
-	// "ondemand" runs the on-demand flow (stdin JSON in, status JSON out).
+	// Subcommand dispatch. Bare invocation = cron flow; "ondemand" = on-demand flow.
 	if len(os.Args) > 1 && os.Args[1] == "ondemand" {
 		runOnDemand()
 		return
@@ -31,13 +31,46 @@ func runCron() {
 		log.Fatal("Failed to initialize db: ", err)
 	}
 
-	queries, err := storage.GetVisibiltyQueries()
+	// Optional filters from env (set by run_all.sh or manually).
+	projectID := strings.TrimSpace(os.Getenv("PROJECT_ID"))
+	platforms := parsePlatforms(os.Getenv("PLATFORMS"))
+
+	if projectID != "" {
+		log.Printf("Project filter : %s\n", projectID)
+	} else {
+		log.Println("Project filter : all")
+	}
+	if len(platforms) > 0 {
+		log.Printf("Platform filter: %s\n", strings.Join(platforms, ", "))
+	} else {
+		log.Println("Platform filter: all")
+	}
+
+	queries, err := storage.GetVisibiltyQueries(projectID)
 	if err != nil {
 		log.Fatal("failed to fetch queries: ", err)
 	}
 	log.Printf("Found %d rows from DB\n", len(queries))
 
-	service.RunAllScrapers(queries)
+	service.RunAllScrapers(queries, platforms)
 
 	log.Println("Done. Exiting...")
+}
+
+// parsePlatforms splits a comma-separated platform string into a slice.
+// Empty/blank input returns nil (= all platforms).
+func parsePlatforms(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	var out []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
